@@ -180,6 +180,8 @@ export interface IAgentFeedbackService {
 	 * Remove a single feedback item.
 	 */
 	removeFeedback(sessionResource: URI, feedbackId: string): void;
+	/** Removes several feedback items at once, notifying listeners a single time. */
+	removeFeedbacks(sessionResource: URI, feedbackIds: readonly string[]): void;
 
 	/**
 	 * Update the text of an existing feedback item.
@@ -491,6 +493,9 @@ export class AgentFeedbackService extends Disposable implements IAgentFeedbackSe
 		return this._annotationsBackend;
 	}
 
+	/** While > 0, per-item backend notifications are held back (see removeFeedbacks). */
+	private _batchRemoveDepth = 0;
+
 	private _backends(): readonly IAgentFeedbackItemsBackend[] {
 		return this._annotationsBackend ? [this._inMemoryBackend, this._annotationsBackend] : [this._inMemoryBackend];
 	}
@@ -501,6 +506,9 @@ export class AgentFeedbackService extends Disposable implements IAgentFeedbackSe
 	 * generic feedback / navigation change events.
 	 */
 	private _handleBackendChange(sessionResource: URI): void {
+		if (this._batchRemoveDepth > 0) {
+			return;
+		}
 		const key = sessionResource.toString();
 		const feedbackItems = this._backendForSession(sessionResource).getItems(sessionResource);
 		const visibleResolvedFeedbackIds = this._visibleResolvedFeedbackIds.get(sessionResource);
@@ -691,6 +699,31 @@ export class AgentFeedbackService extends Disposable implements IAgentFeedbackSe
 			this._navigationAnchorBySession.delete(key);
 		}
 		this._backendForSession(sessionResource).remove(sessionResource, feedbackId);
+	}
+
+	/**
+	 * Removes several feedback items in one operation. Listeners are notified once
+	 * for the whole batch instead of once per item.
+	 */
+	removeFeedbacks(sessionResource: URI, feedbackIds: readonly string[]): void {
+		if (feedbackIds.length === 0) {
+			return;
+		}
+		const key = sessionResource.toString();
+		const anchor = this._navigationAnchorBySession.get(key);
+		if (anchor !== undefined && feedbackIds.includes(anchor)) {
+			this._navigationAnchorBySession.delete(key);
+		}
+		const backend = this._backendForSession(sessionResource);
+		this._batchRemoveDepth++;
+		try {
+			for (const feedbackId of feedbackIds) {
+				backend.remove(sessionResource, feedbackId);
+			}
+		} finally {
+			this._batchRemoveDepth--;
+		}
+		this._handleBackendChange(sessionResource);
 	}
 
 	updateFeedback(sessionResource: URI, feedbackId: string, newText: string): void {
